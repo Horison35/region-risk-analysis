@@ -1,8 +1,20 @@
 """
-Анализ рисков регионов по аналогии с методологией ОСФ (скилл osf-risk-analysis).
+Анализ рисков регионов: Матрица Риск × Рейтинг РУСАДА.
 Источник данных: Рейтинг регионов Итоги 2025 (xlsx)
 Максимум баллов: 190 (блок 1 max 120 + блок 2 max 100 + блок 3 max 50+30*)
-Порог «высокий рейтинг»: 130 баллов (≈68% от 190, аналог 80% у ОСФ)
+Порог «высокий рейтинг»: 130 баллов
+
+Обновлено по логике промта v3:
+  - Приоритеты 1–4 вместо квадрантов со старыми эмодзи
+  - Текстовые коды зон (RED/ORANGE/GREEN) для логики; эмодзи — только декор
+  - ZONE_COLORS (бар, Excel) и QUADRANT_COLORS (scatter) не смешиваются
+  - Инварианты самопроверки
+  - Шаблоны обоснований
+  - Этап 0: вывод артефактов изучения данных
+
+ИСПОЛЬЗОВАНИЕ:
+  1) Обновите XLSX_PATH, OUT_DIR ниже.
+  2) python build_report.py
 """
 
 import openpyxl
@@ -25,14 +37,29 @@ os.makedirs(OUT_DIR, exist_ok=True)
 THRESHOLD = 130   # ~68% от 190 — «достаточный уровень антидопинговой работы»
 MAX_SCORE = 190
 
-# ── Цвета (точно по скиллу) ───────────────────────────────────────────────────
+# ── Цвета ─────────────────────────────────────────────────────────────────────
 INK  = "#0F2D52"; SUB = "#7C8DA6"; GRID = "#EEF2F7"
 FONT_FAMILY = "Inter, Segoe UI, Roboto, Arial, sans-serif"
-ZONE_COLORS = {
-    "🔴 КРИТИЧЕСКАЯ": "#DC2626",
-    "🟠 УМЕРЕННАЯ":   "#F59E0B",
-    "🟢 НИЗКАЯ":      "#10B981",
+
+# Текстовые коды зон (для логики, сортировки, фильтрации)
+ZONE_CODE_RED    = "RED"
+ZONE_CODE_ORANGE = "ORANGE"
+ZONE_CODE_GREEN  = "GREEN"
+
+# Эмодзи — только декор в Excel и дашборде
+ZONE_EMOJI = {"RED": "🔴", "ORANGE": "🟠", "GREEN": "🟢"}
+
+# Для бар-графика и Excel (3 зоны):
+ZONE_COLORS = {"RED": "#DC2626", "ORANGE": "#F59E0B", "GREEN": "#10B981"}
+
+# Для матрицы квадрантов scatter (4 приоритета):
+QUADRANT_COLORS = {
+    "Приоритет 1 (низкий рейтинг + систематичность)": "#DC2626",
+    "Приоритет 2 (высокий рейтинг + систематичность)": "#F59E0B",
+    "Приоритет 3 (низкий рейтинг + нет систематичности)": "#3B82F6",
+    "Приоритет 4 (высокий рейтинг + нет систематичности)": "#10B981",
 }
+# Правило: scatter красится по QUADRANT_COLORS, бар и Excel — по ZONE_COLORS. Не смешивать.
 
 # ── 1. Загрузка данных ────────────────────────────────────────────────────────
 wb = openpyxl.load_workbook(XLSX_PATH, data_only=True)
@@ -106,59 +133,91 @@ df = pd.DataFrame(rows)
 df['Итого баллов'] = pd.to_numeric(df['Итого баллов'], errors='coerce').fillna(0).astype(int)
 df['Место'] = pd.to_numeric(df['Место'], errors='coerce')
 
-# ── 2. Расчёт зоны риска ──────────────────────────────────────────────────────
-# Логика адаптирована из скилла ОСФ:
-# 🔴 КРИТИЧЕСКАЯ — итого < 50% от максимума (< 95 баллов)
-# 🟠 УМЕРЕННАЯ   — 50%–68% (95–129 баллов)
-# 🟢 НИЗКАЯ      — ≥ 68% (≥ 130 баллов)
+# ── ЭТАП 0: Артефакты изучения данных ────────────────────────────────────────
+print("=" * 60)
+print("ЭТАП 0: Изучение входных данных")
+print("=" * 60)
+print(f"Источник: {XLSX_PATH}")
+print(f"Всего регионов (N_рейтинг): {len(df)}")
+print(f"Колонки: ФО, Регион, Блок1, Блок2, Блок3, Итого, Место")
+print(f"Первые 3 региона: {df['Регион'].head(3).tolist()}")
+print(f"Последние 3 региона: {df['Регион'].tail(3).tolist()}")
+print(f"Логика баллов: Блок1 (макс 120) + Блок2 (макс 100) + Блок3 (макс 50+30*) = макс {MAX_SCORE}")
+print("=" * 60)
 
-def get_zone(score):
+# ── 2. Расчёт зоны риска (текстовые коды) ────────────────────────────────────
+# RED    — итого < 95  (<50% от 190)
+# ORANGE — 95 ≤ итого < 130
+# GREEN  — итого ≥ 130
+# Порядок проверки: RED → ORANGE → GREEN. Регион получает ровно одну зону.
+
+def get_zone_code(score):
     if score < 95:
-        return "🔴 КРИТИЧЕСКАЯ"
+        return ZONE_CODE_RED
     elif score < THRESHOLD:
-        return "🟠 УМЕРЕННАЯ"
+        return ZONE_CODE_ORANGE
     else:
-        return "🟢 НИЗКАЯ"
+        return ZONE_CODE_GREEN
 
-df['Зона риска'] = df['Итого баллов'].apply(get_zone)
+df['_zone_code'] = df['Итого баллов'].apply(get_zone_code)
+# Отображаемое значение: эмодзи-декор + текстовый код
+df['Зона риска'] = df['_zone_code'].apply(lambda z: f"{ZONE_EMOJI[z]} {z}")
 
-# ── 3. Квадранты (аналог матрицы ОСФ) ────────────────────────────────────────
-# Ось X: Итого баллов (рейтинг)
-# Ось Y: Зона риска (критическая/умеренная/низкая)
-# Квадранты:
-#   Рейтинг ≥ 130 + Зона НИЗКАЯ    → «Поддерживать, мониторить»
-#   Рейтинг ≥ 130 + Зона УМЕРЕННАЯ → «Усилить образование; внесоревновательный контроль»
-#   Рейтинг < 130 + Зона УМЕРЕННАЯ → «Приоритизировать невыполненные критерии»
-#   Рейтинг < 130 + Зона КРИТИЧЕСКАЯ → «Срочное вмешательство РУСАДА»
+# ── 3. Приоритеты 1–4 и квадранты ────────────────────────────────────────────
+# Матрица приоритетов (порог = 130 баллов):
+# Приоритет 1: Рейтинг < 130 + RED/ORANGE → срочное вмешательство
+# Приоритет 2: Рейтинг ≥ 130 + RED/ORANGE → усилить образование
+# Приоритет 3: Рейтинг < 130 + GREEN       → профилактика + подтянуть рейтинг
+# Приоритет 4: Рейтинг ≥ 130 + GREEN       → поддерживать
 
-def get_quadrant(row):
-    score = row['Итого баллов']
-    zone  = row['Зона риска']
-    if score >= THRESHOLD and zone == "🟢 НИЗКАЯ":
-        return "✅ Высокий рейтинг + Низкий риск"
-    elif score >= THRESHOLD and zone == "🟠 УМЕРЕННАЯ":
-        return "⚠️ Высокий рейтинг + Умеренный риск"
-    elif score < THRESHOLD and zone == "🟠 УМЕРЕННАЯ":
-        return "🔶 Низкий рейтинг + Умеренный риск"
-    elif score < THRESHOLD and zone == "🔴 КРИТИЧЕСКАЯ":
-        return "🚨 Низкий рейтинг + Критический риск"
-    else:
-        return "🔶 Низкий рейтинг + Умеренный риск"
-
-df['Квадрант'] = df.apply(get_quadrant, axis=1)
-
-# ── 4. Рекомендации ───────────────────────────────────────────────────────────
 RECS = {
-    "✅ Высокий рейтинг + Низкий риск":
-        "Поддерживать достигнутый уровень; регулярный мониторинг; обмен лучшими практиками с другими регионами",
-    "⚠️ Высокий рейтинг + Умеренный риск":
-        "Усилить образовательные программы; провести беседы с ответственными специалистами; усилить внесоревновательный контроль",
-    "🔶 Низкий рейтинг + Умеренный риск":
-        "Приоритизировать невыполненные критерии рейтинга; профилактика; подтянуть рейтинг до порогового значения",
-    "🚨 Низкий рейтинг + Критический риск":
-        "Срочное вмешательство РУСАДА: выездные проверки, усиленный контроль, индивидуальный план исправления",
+    1: "Срочное вмешательство РУСАДА; приоритизировать работу по невыполненным критериям всех трёх блоков",
+    2: "Усилить антидопинговое образование; беседы с ответственными; рассмотреть внесоревновательный контроль",
+    3: "Продолжать профилактику; приоритизировать невыполненные критерии рейтинга; превентивная работа с регионом",
+    4: "Поддерживать текущий уровень; обмен лучшими практиками; плановый мониторинг",
 }
-df['Рекомендация'] = df['Квадрант'].map(RECS)
+
+QUADRANT_LABELS = {
+    1: "Приоритет 1 (низкий рейтинг + систематичность)",
+    2: "Приоритет 2 (высокий рейтинг + систематичность)",
+    3: "Приоритет 3 (низкий рейтинг + нет систематичности)",
+    4: "Приоритет 4 (высокий рейтинг + нет систематичности)",
+}
+
+def get_priority(row):
+    score = row['Итого баллов']
+    zone  = row['_zone_code']
+    high_rating = score >= THRESHOLD
+    systematic  = zone in (ZONE_CODE_RED, ZONE_CODE_ORANGE)
+    if not high_rating and systematic:
+        return 1
+    elif high_rating and systematic:
+        return 2
+    elif not high_rating and not systematic:
+        return 3
+    else:
+        return 4
+
+df['Приоритет'] = df.apply(get_priority, axis=1)
+df['Квадрант']  = df['Приоритет'].map(QUADRANT_LABELS)
+df['Рекомендация'] = df['Приоритет'].map(RECS)
+
+# ── 4. Обоснования ───────────────────────────────────────────────────────────
+def get_justification(row):
+    score    = row['Итого баллов']
+    pct      = row['% выполнения']
+    zone     = row['_zone_code']
+    not_done = row.get('Невыполненные критерии', '—')
+    if zone in (ZONE_CODE_RED, ZONE_CODE_ORANGE):
+        base = f"{ZONE_EMOJI[zone]} {zone} риск (итого: {score} из {MAX_SCORE}, {pct}%)"
+        if not_done and not_done != '—':
+            return base + f"; нехватка баллов по критериям: {not_done}"
+        return base + "; критерии рейтинга выполнены полностью"
+    else:
+        base = f"Низкий риск (итого: {score} из {MAX_SCORE}, {pct}%)"
+        if not_done and not_done != '—':
+            return base + f"; недостающие критерии: {not_done}"
+        return base + "; все критерии выполнены"
 
 # ── 5. Невыполненные критерии (блок 1) ───────────────────────────────────────
 CRITERIA_B1 = {
@@ -203,21 +262,42 @@ def get_done(row):
             done.append(label)
     return "; ".join(done) if done else "—"
 
-df['Выполненные критерии'] = df.apply(get_done, axis=1)
+df['Выполненные критерии']   = df.apply(get_done, axis=1)
 df['Невыполненные критерии'] = df.apply(get_not_done, axis=1)
 
 # ── 6. Процент выполнения ─────────────────────────────────────────────────────
 df['% выполнения'] = (df['Итого баллов'] / MAX_SCORE * 100).round(1)
 
-# ── 7. Сортировка ─────────────────────────────────────────────────────────────
-zone_order = {"🔴 КРИТИЧЕСКАЯ": 0, "🟠 УМЕРЕННАЯ": 1, "🟢 НИЗКАЯ": 2}
-df['_zone_order'] = df['Зона риска'].map(zone_order)
-df = df.sort_values(['_zone_order', 'Итого баллов']).reset_index(drop=True)
-df.drop(columns=['_zone_order'], inplace=True)
+# Обоснования (после расчёта критериев)
+df['Обоснование'] = df.apply(get_justification, axis=1)
+
+# ── 7. Сортировка: приоритет → zone (RED=1, ORANGE=2, GREEN=3) → балл убыв. ──
+zone_sort = {ZONE_CODE_RED: 1, ZONE_CODE_ORANGE: 2, ZONE_CODE_GREEN: 3}
+df['_zone_sort'] = df['_zone_code'].map(zone_sort)
+df = df.sort_values(['Приоритет', '_zone_sort', 'Итого баллов'],
+                    ascending=[True, True, False]).reset_index(drop=True)
+df.drop(columns=['_zone_sort'], inplace=True)
 df.index = range(1, len(df)+1)
 
-print(f"Всего регионов: {len(df)}")
-print(df[['Регион', 'Итого баллов', 'Зона риска', 'Квадрант']].head(10))
+# ── САМОПРОВЕРКА (инварианты) ─────────────────────────────────────────────────
+N_RATING = len(df)
+print(f"\n{'='*60}")
+print("САМОПРОВЕРКА (инварианты)")
+print(f"{'='*60}")
+print(f"1. Строк в итоговой таблице = {N_RATING} (должно быть ~89): {'✓' if N_RATING > 0 else '✗'}")
+prio_sum = df['Приоритет'].count()
+print(f"2. Сумма строк по приоритетам = {prio_sum} (должно быть {N_RATING}): {'✓' if prio_sum == N_RATING else '✗ ОШИБКА'}")
+zone_dist = df['_zone_code'].value_counts().to_dict()
+print(f"3. Распределение по зонам: {zone_dist}")
+prio_dist = df['Приоритет'].value_counts().sort_index().to_dict()
+print(f"   Распределение по приоритетам: {prio_dist}")
+bad4 = df[df['_zone_code'].isin([ZONE_CODE_RED, ZONE_CODE_ORANGE]) & df['Приоритет'].isin([3, 4])]
+print(f"4. RED/ORANGE с приоритетами 3-4: {len(bad4)} (должно быть 0): {'✓' if len(bad4)==0 else '✗ ОШИБКА'}")
+bad5 = df[(df['_zone_code'] == ZONE_CODE_GREEN) & df['Приоритет'].isin([1, 2])]
+print(f"5. GREEN с приоритетами 1-2: {len(bad5)} (должно быть 0): {'✓' if len(bad5)==0 else '✗ ОШИБКА'}")
+bad_header = df[df['Регион'].str.lower().isin(['субъект рф', 'субъект'])]
+print(f"7. Строки-заголовки в таблице: {len(bad_header)} (должно быть 0): {'✓' if len(bad_header)==0 else '✗ ОШИБКА'}")
+print(f"{'='*60}\n")
 
 # ── 8. Excel-отчёт ───────────────────────────────────────────────────────────
 OUT_XLSX = os.path.join(OUT_DIR, "region_risk_final.xlsx")
@@ -246,12 +326,13 @@ BORDER_THIN = Border(
 )
 
 COLS = [
-    '№', 'ФО', 'Регион', 'Итого баллов', '% выполнения', 'Место',
-    'Зона риска', 'Квадрант',
+    '№', 'ФО', 'Регион', 'Приоритет', 'Квадрант', 'Зона риска',
+    'Итого баллов', '% выполнения', 'Место',
     'Блок 1 (Взаимодействие с РУСАДА)',
     'Блок 2 (Образование)',
     'Блок 3 (Профилактика здравоохранения)',
-    'Выполненные критерии', 'Невыполненные критерии', 'Рекомендация'
+    'Выполненные критерии', 'Невыполненные критерии',
+    'Рекомендация', 'Обоснование'
 ]
 
 # Заголовок
@@ -285,26 +366,28 @@ for i, row in df.iterrows():
         i,
         row['ФО'],
         row['Регион'],
+        row['Приоритет'],
+        row['Квадрант'],
+        row['Зона риска'],
         row['Итого баллов'],
         f"{row['% выполнения']}%",
         row['Место'],
-        row['Зона риска'],
-        row['Квадрант'],
         row['Блок 1 (Взаимодействие с РУСАДА)'],
         row['Блок 2 (Образование)'],
         row['Блок 3 (Профилактика здравоохранения)'],
         row['Выполненные критерии'],
         row['Невыполненные критерии'],
         row['Рекомендация'],
+        row['Обоснование'],
     ]
     ws_main.append(data_row)
     row_num = ws_main.max_row
 
-    # Цвет строки по зоне
-    zone = row['Зона риска']
-    if zone == "🔴 КРИТИЧЕСКАЯ":
+    # Цвет строки по zone_code (текстовый код)
+    zone_code = row['_zone_code']
+    if zone_code == ZONE_CODE_RED:
         fill = FILL_RED
-    elif zone == "🟠 УМЕРЕННАЯ":
+    elif zone_code == ZONE_CODE_ORANGE:
         fill = FILL_ORANGE
     else:
         fill = FILL_GREEN
@@ -319,7 +402,7 @@ for i, row in df.iterrows():
     ws_main.row_dimensions[row_num].height = 40 if row['Невыполненные критерии'] != '—' else 18
 
 # Ширины столбцов
-col_widths = [5, 7, 28, 12, 12, 8, 18, 38, 14, 14, 14, 55, 55, 60]
+col_widths = [5, 7, 28, 10, 45, 18, 12, 12, 8, 14, 14, 14, 55, 55, 60, 65]
 for i, w in enumerate(col_widths, start=1):
     ws_main.column_dimensions[get_column_letter(i)].width = w
 
@@ -330,9 +413,9 @@ ws_main.freeze_panes = 'A5'
 ws_fo = wb_out.create_sheet("Сводка по ФО")
 fo_summary = df.groupby('ФО').agg(
     Регионов=('Регион', 'count'),
-    Критических=('Зона риска', lambda x: (x == '🔴 КРИТИЧЕСКАЯ').sum()),
-    Умеренных=('Зона риска', lambda x: (x == '🟠 УМЕРЕННАЯ').sum()),
-    Низких=('Зона риска', lambda x: (x == '🟢 НИЗКАЯ').sum()),
+    Критических=('_zone_code', lambda x: (x == ZONE_CODE_RED).sum()),
+    Умеренных=('_zone_code', lambda x: (x == ZONE_CODE_ORANGE).sum()),
+    Низких=('_zone_code', lambda x: (x == ZONE_CODE_GREEN).sum()),
     Средний_балл=('Итого баллов', 'mean'),
     Мин_балл=('Итого баллов', 'min'),
     Макс_балл=('Итого баллов', 'max'),
@@ -404,19 +487,23 @@ fig = make_subplots(
     horizontal_spacing=0.1,
 )
 
-# --- График 1: Scatter матрица ---
+# --- График 1: Scatter матрица (цвет по QUADRANT_COLORS) ---
 import random
 random.seed(42)
-zone_y = {"🔴 КРИТИЧЕСКАЯ": 1, "🟠 УМЕРЕННАЯ": 2, "🟢 НИЗКАЯ": 3}
 
-for zone, color in color_map.items():
-    sub = df[df['Зона риска'] == zone]
-    jitter_y = [zone_y[zone] + random.uniform(-0.25, 0.25) for _ in range(len(sub))]
+for quad_label, color in QUADRANT_COLORS.items():
+    sub = df[df['Квадрант'] == quad_label]
+    if sub.empty:
+        continue
+    x_vals = sub['Итого баллов'].astype(float)
+    x_jitter = x_vals + [random.uniform(-2, 2) for _ in range(len(sub))]
+    y_base = sub['Приоритет'].astype(float)
+    y_jitter = y_base + [random.uniform(-0.02, 0.02) for _ in range(len(sub))]
     fig.add_trace(go.Scatter(
-        x=sub['Итого баллов'],
-        y=jitter_y,
+        x=x_jitter,
+        y=y_jitter,
         mode='markers+text',
-        name=zone,
+        name=quad_label,
         marker=dict(color=color, size=10, opacity=0.82, line=dict(width=0.5, color='white')),
         text=sub['Регион'].apply(lambda x: x[:12] + '…' if len(x) > 12 else x),
         textposition='top center',
@@ -424,11 +511,10 @@ for zone, color in color_map.items():
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
             "ФО: %{customdata[1]}<br>"
-            "Баллы: %{x}<br>"
-            "Место: %{customdata[2]}<br>"
-            "Зона: " + zone + "<extra></extra>"
+            "Баллы: %{customdata[2]}<br>"
+            "Приоритет: %{customdata[3]}<extra></extra>"
         ),
-        customdata=list(zip(sub['Регион'], sub['ФО'], sub['Место'].fillna('—'))),
+        customdata=list(zip(sub['Регион'], sub['ФО'], sub['Итого баллов'], sub['Приоритет'])),
     ), row=1, col=1)
 
 fig.add_vline(x=THRESHOLD, line_dash="dash", line_color=INK, line_width=1.5,
@@ -442,9 +528,9 @@ fig.update_yaxes(
 )
 fig.update_xaxes(title_text="Итого баллов (макс. 190)", row=1, col=1)
 
-# --- График 2: Топ-20 рисковых регионов (горизонтальный бар) ---
-top20 = df[df['Зона риска'].isin(['🔴 КРИТИЧЕСКАЯ', '🟠 УМЕРЕННАЯ'])].sort_values('Итого баллов').tail(20)
-bar_colors = [color_map[z] for z in top20['Зона риска']]
+# --- График 2: Топ-20 рисковых регионов (горизонтальный бар, цвет по ZONE_COLORS) ---
+top20 = df[df['_zone_code'].isin([ZONE_CODE_RED, ZONE_CODE_ORANGE])].sort_values('Итого баллов').tail(20)
+bar_colors = [ZONE_COLORS[z] for z in top20['_zone_code']]
 
 fig.add_trace(go.Bar(
     x=top20['Итого баллов'],
@@ -460,15 +546,9 @@ fig.add_trace(go.Bar(
 ), row=1, col=2)
 fig.update_xaxes(title_text="Итого баллов", row=1, col=2)
 
-# --- График 3: Pie по квадрантам ---
+# --- График 3: Pie по приоритетам (цвет по QUADRANT_COLORS) ---
 quad_counts = df['Квадрант'].value_counts()
-quad_colors_map = {
-    "✅ Высокий рейтинг + Низкий риск":   "#10B981",
-    "⚠️ Высокий рейтинг + Умеренный риск": "#F59E0B",
-    "🔶 Низкий рейтинг + Умеренный риск":  "#FB923C",
-    "🚨 Низкий рейтинг + Критический риск": "#DC2626",
-}
-pie_colors = [quad_colors_map.get(q, "#94A3B8") for q in quad_counts.index]
+pie_colors = [QUADRANT_COLORS.get(q, "#94A3B8") for q in quad_counts.index]
 
 fig.add_trace(go.Pie(
     labels=quad_counts.index,
@@ -480,10 +560,11 @@ fig.add_trace(go.Pie(
     showlegend=False,
 ), row=2, col=1)
 
-# --- График 4: Средний балл по ФО ---
+# --- График 4: Средний балл по ФО (цвет по ZONE_COLORS) ---
 fo_avg = df.groupby('ФО')['Итого баллов'].mean().sort_values()
 fo_bar_colors = [
-    "#DC2626" if v < 95 else ("#F59E0B" if v < THRESHOLD else "#10B981")
+    ZONE_COLORS[ZONE_CODE_RED] if v < 95 else
+    (ZONE_COLORS[ZONE_CODE_ORANGE] if v < THRESHOLD else ZONE_COLORS[ZONE_CODE_GREEN])
     for v in fo_avg.values
 ]
 
