@@ -383,18 +383,8 @@ for i, row in df.iterrows():
     ws_main.append(data_row)
     row_num = ws_main.max_row
 
-    # Цвет строки по zone_code (текстовый код)
-    zone_code = row['_zone_code']
-    if zone_code == ZONE_CODE_RED:
-        fill = FILL_RED
-    elif zone_code == ZONE_CODE_ORANGE:
-        fill = FILL_ORANGE
-    else:
-        fill = FILL_GREEN
-
     for col_idx in range(1, len(COLS)+1):
         cell = ws_main.cell(row=row_num, column=col_idx)
-        cell.fill = fill
         cell.font = FONT_NORM
         cell.border = BORDER_THIN
         cell.alignment = Alignment(vertical='top', wrap_text=(col_idx >= 12))
@@ -450,12 +440,7 @@ for _, row in fo_summary.iterrows():
         cell.border = BORDER_THIN
         cell.font = FONT_NORM
         cell.alignment = Alignment(horizontal='center')
-    if row['Критических'] > 0:
-        ws_fo.cell(row=r, column=3).fill = FILL_RED
-    if row['Умеренных'] > 0:
-        ws_fo.cell(row=r, column=4).fill = FILL_ORANGE
-    if row['Низких'] > 0:
-        ws_fo.cell(row=r, column=5).fill = FILL_GREEN
+    # Цветовое форматирование строк отключено
 
 for i, w in enumerate([10, 10, 16, 16, 12, 14, 12, 12], start=1):
     ws_fo.column_dimensions[get_column_letter(i)].width = w
